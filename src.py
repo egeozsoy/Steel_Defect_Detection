@@ -23,6 +23,8 @@ if __name__ == '__main__':
     plot_dataloader_examples = False
     use_lr_find = False
 
+    batch_size = 64
+
     tr = pd.read_csv(path + 'train.csv')
     print(len(tr))
 
@@ -56,27 +58,46 @@ if __name__ == '__main__':
 
     # Scaling for images
     data_transf = transforms.Compose([
-        transforms.Resize((32, 32)),# TODO make bigger
+        transforms.Resize((256, 256)),
         transforms.ToTensor()])
     train_data = ImageData(df=df_train, transform=data_transf)
-    train_loader = DataLoader(dataset=train_data, batch_size=2, shuffle=True)
+
+    # Deal with imbalanced data https://discuss.pytorch.org/t/how-to-prevent-overfitting/1902/5, https://discuss.pytorch.org/t/some-problems-with-weightedrandomsampler/23242
+    class_sample_count = [len(df_train[df_train['ImageId_ClassId'].str.contains(".jpg_{}".format(i + 1))]) for i in
+                          range(4)]  # measure how many samples the dataset contains for each class
+    print('Data Balance: {}'.format(class_sample_count))
+    weights = 1 / torch.Tensor(class_sample_count)  # Calculate how to weight every class
+    sample_weights = []  # For every training example, assign a weight
+    for item in df_train['ImageId_ClassId']:
+        class_id = int(item[-1])
+        sample_weights.append(weights[class_id - 1])
+
+    # Use sampler to use the weight while drawing samples
+    sampler = torch.utils.data.sampler.WeightedRandomSampler(sample_weights, batch_size)
+
+    # train loader uses sampler
+    train_loader = DataLoader(dataset=train_data, batch_size=batch_size, sampler=sampler)
 
     if plot_dataloader_examples:
-        for i in range(5):
-            plt.imshow(train_data[i][0].permute(1, 2, 0))
-            plt.show()
+        counts = [0, 0, 0, 0]
 
-            plt.imshow(np.squeeze(train_data[i][1].permute(1, 2, 0)))
+        values = next(iter(train_loader))
+        for i in range(len(values[0])):
+            counts[values[2][i].int() - 1] += 1
+            # plt.imshow(train_data[i][0].permute(1, 2, 0))
+            # plt.show()
+            #
+            # plt.imshow(np.squeeze(train_data[i][1].permute(1, 2, 0)))
             plt.show()
-
+        print(counts)
     # Create unet model for four classes
     model = UNet(n_class=4)
     if use_gpu:
         print('Using cuda')
         model = model.cuda()
     criterion = nn.BCEWithLogitsLoss()
-    lr = 0.001  # Enter optimal base_lr found by lr_find
-    lr_max = 0.01  # enter optimal max_lr fonud by lr_find
+    lr = 0.0001  # Enter optimal base_lr found by lr_find
+    lr_max = 0.001  # enter optimal max_lr fonud by lr_find
     optimizer = torch.optim.SGD(model.parameters(), weight_decay=1e-4, lr=lr, momentum=0.9)
     # pytorch bug avoids using adam, check in couple of days
     # optimizer = torch.optim.Adam(model.parameters())
@@ -86,7 +107,7 @@ if __name__ == '__main__':
 
     scheduler = CyclicLR(optimizer, lr, lr_max)
 
-    for epoch in range(1):
+    for epoch in range(10):
         model.train()
         for i, (data, target, class_ids) in enumerate(train_loader):
             data, target = data, target
