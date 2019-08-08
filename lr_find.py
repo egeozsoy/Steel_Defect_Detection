@@ -17,6 +17,11 @@ def lr_find(model: UNet, data_loader, optimizer: Optimizer, criterion, use_gpu, 
     model.train()
     for i, (data, target, class_ids) in enumerate(data_loader):
         data, target = data, target
+
+        if use_gpu:
+            data = data.cuda()
+            target = target.cuda()
+
         optimizer.zero_grad()
         output_raw = model(data)
         # This step is specific for this project

@@ -29,7 +29,8 @@ class ImageData(Dataset):
         if self.subset == 'train':
             mask = rle2mask(self.df['EncodedPixels'].iloc[index], (256, 1600))
             mask = transforms.ToPILImage()(mask)
-            mask = self.transform(mask)
+            mask = self.transform(mask) != 0  # ensure tensor is either 0 or 1
+            mask = mask.float()
             return img, mask, int(class_id_str)
         else:
             mask = None

@@ -15,7 +15,6 @@ from model import UNet
 from lr_find import lr_find
 
 # https://www.kaggle.com/egeozsoy/steel-defect-detection/edit
-# cuda support
 
 if __name__ == '__main__':
     use_gpu = torch.cuda.is_available()
@@ -23,12 +22,12 @@ if __name__ == '__main__':
     plot_dataloader_examples = False
     use_lr_find = False
 
-    batch_size = 64
+    batch_size = 16
 
     tr = pd.read_csv(path + 'train.csv')
     print(len(tr))
 
-    df_train = tr[tr['EncodedPixels'].notnull()].reset_index(drop=True)
+    df_train = tr[tr['EncodedPixels'].notnull()].reset_index(drop=True)[0:1000]
     print(len(df_train))
 
     if plot_beginning_images:
@@ -73,10 +72,10 @@ if __name__ == '__main__':
         sample_weights.append(weights[class_id - 1])
 
     # Use sampler to use the weight while drawing samples
-    sampler = torch.utils.data.sampler.WeightedRandomSampler(sample_weights, batch_size)
+    sampler = torch.utils.data.sampler.WeightedRandomSampler(sample_weights, len(df_train))
 
     # train loader uses sampler
-    train_loader = DataLoader(dataset=train_data, batch_size=batch_size, sampler=sampler)
+    train_loader = DataLoader(dataset=train_data, batch_size=batch_size, sampler=sampler,pin_memory=True)
 
     if plot_dataloader_examples:
         counts = [0, 0, 0, 0]
@@ -84,22 +83,23 @@ if __name__ == '__main__':
         values = next(iter(train_loader))
         for i in range(len(values[0])):
             counts[values[2][i].int() - 1] += 1
-            # plt.imshow(train_data[i][0].permute(1, 2, 0))
-            # plt.show()
-            #
-            # plt.imshow(np.squeeze(train_data[i][1].permute(1, 2, 0)))
+            plt.imshow(train_data[i][0].permute(1, 2, 0))
+            plt.show()
+            plt.imshow(np.squeeze(train_data[i][1].permute(1, 2, 0)))
             plt.show()
         print(counts)
     # Create unet model for four classes
     model = UNet(n_class=4)
     if use_gpu:
-        print('Using cuda')
+        print('Using CUDA')
         model = model.cuda()
-    criterion = nn.BCEWithLogitsLoss()
-    lr = 0.0001  # Enter optimal base_lr found by lr_find
-    lr_max = 0.001  # enter optimal max_lr fonud by lr_find
+
+    # criterion = nn.BCEWithLogitsLoss() this is actually more numerically stable
+    criterion = nn.BCELoss()
+    lr = 0.001  # Enter optimal base_lr found by lr_find
+    lr_max = 0.03  # enter optimal max_lr fonud by lr_find
     optimizer = torch.optim.SGD(model.parameters(), weight_decay=1e-4, lr=lr, momentum=0.9)
-    # pytorch bug avoids using adam, check in couple of days
+    # pytorch cycliclr bug avoids using adam, check in couple of days
     # optimizer = torch.optim.Adam(model.parameters())
 
     if use_lr_find:
@@ -111,6 +111,10 @@ if __name__ == '__main__':
         model.train()
         for i, (data, target, class_ids) in enumerate(train_loader):
             data, target = data, target
+            if use_gpu:
+                data = data.cuda()
+                target = target.cuda()
+
             optimizer.zero_grad()
             output_raw = model(data)
             # This step is specific for this project
@@ -119,7 +123,7 @@ if __name__ == '__main__':
             if use_gpu:
                 output = output.cuda()
 
-            # This step is specific for this project
+            # # This step is specific for this project
             for idx, (raw_o, class_id) in enumerate(zip(output_raw, class_ids)):
                 output[idx] = raw_o[class_id - 1]
 
@@ -129,6 +133,10 @@ if __name__ == '__main__':
             optimizer.step()
             scheduler.step()
 
+        img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
+        img[(output[0][0] > 0.1).cpu().numpy().astype(np.bool), 0] = 1
+        plt.imshow(img)
+        plt.show()
         print('Epoch: {} - Loss: {:.6f}'.format(epoch + 1, loss.item()))
 
     # # Submission example
