@@ -7,9 +7,9 @@ from torchvision import transforms
 from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data import DataLoader
 from torch import nn
-
-from configurations import path
-from utils import rle2mask, mask2rle
+from sklearn.model_selection import train_test_split
+from configurations import path, img_size
+from utils import rle2mask, mask2rle, create_balanced_class_sampler
 from dataset import ImageData
 from model import UNet
 from lr_find import lr_find
@@ -22,13 +22,15 @@ if __name__ == '__main__':
     plot_dataloader_examples = False
     use_lr_find = False
 
-    batch_size = 16
+    batch_size = 10
 
     tr = pd.read_csv(path + 'train.csv')
     print(len(tr))
 
-    df_train = tr[tr['EncodedPixels'].notnull()].reset_index(drop=True)[0:1000]
-    print(len(df_train))
+    df_all = tr[tr['EncodedPixels'].notnull()].reset_index(drop=True)
+    df_train, df_valid = train_test_split(df_all, random_state=42, test_size=0.1)
+
+    print(len(df_train), len(df_valid))
 
     if plot_beginning_images:
         columns = 1
@@ -55,27 +57,25 @@ if __name__ == '__main__':
             plt.imshow(img)
         plt.show()
 
-    # Scaling for images
-    data_transf = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor()])
-    train_data = ImageData(df=df_train, transform=data_transf)
+    # Define transformations
+    data_transf_train = transforms.Compose(
+        [transforms.RandomResizedCrop(size=(img_size, img_size), scale=(0.50, 1.0)), transforms.RandomHorizontalFlip(), transforms.ToTensor(),
+         ])
 
-    # Deal with imbalanced data https://discuss.pytorch.org/t/how-to-prevent-overfitting/1902/5, https://discuss.pytorch.org/t/some-problems-with-weightedrandomsampler/23242
-    class_sample_count = [len(df_train[df_train['ImageId_ClassId'].str.contains(".jpg_{}".format(i + 1))]) for i in
-                          range(4)]  # measure how many samples the dataset contains for each class
-    print('Data Balance: {}'.format(class_sample_count))
-    weights = 1 / torch.Tensor(class_sample_count)  # Calculate how to weight every class
-    sample_weights = []  # For every training example, assign a weight
-    for item in df_train['ImageId_ClassId']:
-        class_id = int(item[-1])
-        sample_weights.append(weights[class_id - 1])
+    data_transf_valid = transforms.Compose([transforms.Resize(size=(img_size, img_size)), transforms.ToTensor(),
+                                            ])
 
-    # Use sampler to use the weight while drawing samples
-    sampler = torch.utils.data.sampler.WeightedRandomSampler(sample_weights, len(df_train))
+    # Define data
+    train_data = ImageData(df=df_train, transform=data_transf_train, subset='train')
+    validation_data = ImageData(df=df_valid, transform=data_transf_valid, subset='valid')
 
-    # train loader uses sampler
-    train_loader = DataLoader(dataset=train_data, batch_size=batch_size, sampler=sampler,pin_memory=True)
+    # Define samplers
+    train_sampler = create_balanced_class_sampler(df_train)
+    validation_sampler = create_balanced_class_sampler(df_valid)
+
+    # loader uses sampler
+    train_loader = DataLoader(dataset=train_data, batch_size=batch_size, sampler=train_sampler, pin_memory=True)
+    validation_loader = DataLoader(dataset=validation_data, batch_size=batch_size, sampler=validation_sampler, pin_memory=True)
 
     if plot_dataloader_examples:
         counts = [0, 0, 0, 0]
@@ -90,25 +90,33 @@ if __name__ == '__main__':
         print(counts)
     # Create unet model for four classes
     model = UNet(n_class=4)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Total Paramaters: {total_params}, Trainable Parameters: {trainable_params}')
+
     if use_gpu:
         print('Using CUDA')
         model = model.cuda()
 
     # criterion = nn.BCEWithLogitsLoss() this is actually more numerically stable
     criterion = nn.BCELoss()
-    lr = 0.001  # Enter optimal base_lr found by lr_find
-    lr_max = 0.03  # enter optimal max_lr fonud by lr_find
-    optimizer = torch.optim.SGD(model.parameters(), weight_decay=1e-4, lr=lr, momentum=0.9)
-    # pytorch cycliclr bug avoids using adam, check in couple of days
-    # optimizer = torch.optim.Adam(model.parameters())
+    lr = 0.0003  # Enter optimal base_lr found by lr_find
+    lr_max = 0.003  # enter optimal max_lr fonud by lr_find
+    # optimizer = torch.optim.SGD(model.parameters(), weight_decay=1e-4, lr=lr, momentum=0.9)
+    # this only works because pytorch code is changed manually https://github.com/pytorch/pytorch/issues/19003(pytorch 1.2.0 should fix it)
+    optimizer = torch.optim.Adam(model.parameters())
 
     if use_lr_find:
         lr_find(model, train_loader, optimizer, criterion, use_gpu)
 
-    scheduler = CyclicLR(optimizer, lr, lr_max)
+    scheduler = CyclicLR(optimizer, lr, lr_max, cycle_momentum=False)
 
-    for epoch in range(10):
+    for epoch in range(20):
+
+        # Training loop
         model.train()
+        total_training_loss = 0.0
         for i, (data, target, class_ids) in enumerate(train_loader):
             data, target = data, target
             if use_gpu:
@@ -116,28 +124,46 @@ if __name__ == '__main__':
                 target = target.cuda()
 
             optimizer.zero_grad()
-            output_raw = model(data)
-            # This step is specific for this project
-            output = torch.zeros(output_raw.shape[0], 1, output_raw.shape[2], output_raw.shape[3])
-
-            if use_gpu:
-                output = output.cuda()
-
-            # # This step is specific for this project
-            for idx, (raw_o, class_id) in enumerate(zip(output_raw, class_ids)):
-                output[idx] = raw_o[class_id - 1]
+            output = model.predict(data, use_gpu, class_ids)
 
             loss = criterion(output, target)
             loss.backward()
 
             optimizer.step()
             scheduler.step()
+            total_training_loss += loss.item()
 
         img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
         img[(output[0][0] > 0.1).cpu().numpy().astype(np.bool), 0] = 1
+        img[(target[0][0] > 0.1).cpu().numpy().astype(np.bool), 1] = 1
+        # overlapping regions look yellow
         plt.imshow(img)
         plt.show()
-        print('Epoch: {} - Loss: {:.6f}'.format(epoch + 1, loss.item()))
+        print('Training Epoch: {} - Loss: {:.6f}'.format(epoch + 1, total_training_loss / len(df_train)))
+        torch.save(model.state_dict(), 'model.pth')
+
+        # Validation Loop
+        model.eval()
+        total_validation_loss = 0.0
+        for i, (data, target, class_ids) in enumerate(validation_loader):
+            data, target = data, target
+            if use_gpu:
+                data = data.cuda()
+                target = target.cuda()
+
+            optimizer.zero_grad()
+            output = model.predict(data, use_gpu, class_ids)
+
+            loss = criterion(output, target)
+            total_validation_loss += loss.item()
+
+        img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
+        img[(output[0][0] > 0.1).cpu().numpy().astype(np.bool), 0] = 1
+        img[(target[0][0] > 0.1).cpu().numpy().astype(np.bool), 1] = 1
+        # overlapping regions look yellow
+        plt.imshow(img)
+        plt.show()
+        print('Validation Epoch: {} - Loss: {:.6f}'.format(epoch + 1, total_validation_loss / len(df_valid)))
 
     # # Submission example
     # submit = pd.read_csv(path + 'sample_submission.csv', converters={'EncodedPixels': lambda e: ' '})

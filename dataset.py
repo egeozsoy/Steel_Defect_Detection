@@ -13,7 +13,7 @@ class ImageData(Dataset):
         self.transform = transform
         self.subset = subset
 
-        if self.subset == "train":
+        if self.subset == "train" or self.subset == 'valid':
             self.data_path = path + 'train_images/'
         elif self.subset == "test":
             self.data_path = path + 'test_images/'
@@ -26,7 +26,7 @@ class ImageData(Dataset):
         img = Image.open(self.data_path + fn)
         img = self.transform(img)
 
-        if self.subset == 'train':
+        if self.subset == 'train' or self.subset == 'valid':
             mask = rle2mask(self.df['EncodedPixels'].iloc[index], (256, 1600))
             mask = transforms.ToPILImage()(mask)
             mask = self.transform(mask) != 0  # ensure tensor is either 0 or 1

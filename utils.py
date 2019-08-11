@@ -1,4 +1,22 @@
 import numpy as np
+import torch
+
+
+def create_balanced_class_sampler(df):
+    # Deal with imbalanced data https://discuss.pytorch.org/t/how-to-prevent-overfitting/1902/5, https://discuss.pytorch.org/t/some-problems-with-weightedrandomsampler/23242
+    class_sample_count = [len(df[df['ImageId_ClassId'].str.contains(".jpg_{}".format(i + 1))]) for i in
+                          range(4)]  # measure how many samples the dataset contains for each class
+    print('Data Balance: {}'.format(class_sample_count))
+    weights = 1 / torch.Tensor(class_sample_count)  # Calculate how to weight every class
+    sample_weights = []  # For every training example, assign a weight
+    for item in df['ImageId_ClassId']:
+        class_id = int(item[-1])
+        sample_weights.append(weights[class_id - 1])
+
+    # Use sampler to use the weight while drawing samples
+    sampler = torch.utils.data.sampler.WeightedRandomSampler(sample_weights, len(df))
+
+    return sampler
 
 
 def rle2mask(rle, imgshape):

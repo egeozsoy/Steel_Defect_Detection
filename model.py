@@ -14,7 +14,7 @@ class UNet(nn.Module):
     def __init__(self, n_class):
         super().__init__()
 
-        self.base_model = models.resnet18(pretrained=True)
+        self.base_model = models.resnet34(pretrained=True)
         # get layers from pytorch model
         self.base_layers = list(self.base_model.children())
 
@@ -84,3 +84,17 @@ class UNet(nn.Module):
         out = self.sigmoid(out)
 
         return out
+
+    def predict(self, data, use_gpu, class_ids):
+        output_raw = self(data)
+        # This step is specific for this project
+        output = torch.zeros(output_raw.shape[0], 1, output_raw.shape[2], output_raw.shape[3])
+
+        if use_gpu:
+            output = output.cuda()
+
+        # # This step is specific for this project
+        for idx, (raw_o, class_id) in enumerate(zip(output_raw, class_ids)):
+            output[idx] = raw_o[class_id - 1]
+
+        return output
