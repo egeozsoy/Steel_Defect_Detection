@@ -109,8 +109,7 @@ if __name__ == '__main__':
     criterion = nn.BCEWithLogitsLoss()  # this is more numerically stable than applying sigmoid and using nn.BCELoss()
     lr = 0.0003  # Enter optimal base_lr found by lr_find
     lr_max = 0.003  # enter optimal max_lr fonud by lr_find
-    # optimizer = torch.optim.SGD(model.parameters(), weight_decay=1e-4, lr=lr, momentum=0.9)
-    # this only works because pytorch code is changed manually https://github.com/pytorch/pytorch/issues/19003(pytorch 1.2.0 should fix it)
+    # this only works because pytorch code is changed manually https://github.com/pytorch/pytorch/issues/19003(pytorch 1.2.0 fixes this)
     optimizer = torch.optim.Adam(model.parameters())
 
     if use_lr_find:
@@ -140,7 +139,7 @@ if __name__ == '__main__':
                 total_training_loss += loss.item()
 
             img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
-            output_mask = np.abs(create_boolean_mask(output[0][0].cpu().detach().numpy()) * (-1))  # TODO make sure this mask works correctly
+            output_mask = np.abs(create_boolean_mask(output[0][0].cpu().detach().numpy()) * (-1))
             target_mask = target[0][0].cpu().numpy().astype(np.bool)
 
             img[output_mask == 1, 0] = 1
