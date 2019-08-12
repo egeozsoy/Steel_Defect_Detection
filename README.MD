@@ -1,2 +1,2 @@
-Detect defects in steel using only images.
-https://www.kaggle.com/egeozsoy/steel-defect-detection
+Detect defects in steel using only images. Uses UNet for segmentation. 
+https://www.kaggle.com/c/severstal-steel-defect-detection

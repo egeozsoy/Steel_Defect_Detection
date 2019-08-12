@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -8,21 +10,26 @@ from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data import DataLoader
 from torch import nn
 from sklearn.model_selection import train_test_split
-from configurations import path, img_size
-from utils import rle2mask, mask2rle, create_balanced_class_sampler
+
+from configurations import path, img_size, train
+from utils import rle2mask, create_balanced_class_sampler, create_boolean_mask
 from dataset import ImageData
 from model import UNet
 from lr_find import lr_find
 
-# https://www.kaggle.com/egeozsoy/steel-defect-detection/edit
+# https://www.kaggle.com/c/severstal-steel-defect-detection
 
 if __name__ == '__main__':
+
+    if not os.path.exists('training_process'):
+        os.mkdir('training_process')
+
     use_gpu = torch.cuda.is_available()
     plot_beginning_images = False
     plot_dataloader_examples = False
     use_lr_find = False
 
-    batch_size = 10
+    batch_size = 12
 
     tr = pd.read_csv(path + 'train.csv')
     print(len(tr))
@@ -57,17 +64,14 @@ if __name__ == '__main__':
             plt.imshow(img)
         plt.show()
 
-    # Define transformations
-    data_transf_train = transforms.Compose(
-        [transforms.RandomResizedCrop(size=(img_size, img_size), scale=(0.50, 1.0)), transforms.RandomHorizontalFlip(), transforms.ToTensor(),
+    # Define transformation(if needed augmentation can be applied here)
+    data_transf = transforms.Compose(
+        [transforms.Resize(size=(img_size, img_size)), transforms.ToTensor(),
          ])
 
-    data_transf_valid = transforms.Compose([transforms.Resize(size=(img_size, img_size)), transforms.ToTensor(),
-                                            ])
-
     # Define data
-    train_data = ImageData(df=df_train, transform=data_transf_train, subset='train')
-    validation_data = ImageData(df=df_valid, transform=data_transf_valid, subset='valid')
+    train_data = ImageData(df=df_train, transform=data_transf, subset='train')
+    validation_data = ImageData(df=df_valid, transform=data_transf, subset='valid')
 
     # Define samplers
     train_sampler = create_balanced_class_sampler(df_train)
@@ -90,6 +94,9 @@ if __name__ == '__main__':
         print(counts)
     # Create unet model for four classes
     model = UNet(n_class=4)
+    if os.path.exists('model.pth'):
+        print('Model loaded')
+        model.load_state_dict(torch.load('model.pth'))
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -99,8 +106,7 @@ if __name__ == '__main__':
         print('Using CUDA')
         model = model.cuda()
 
-    # criterion = nn.BCEWithLogitsLoss() this is actually more numerically stable
-    criterion = nn.BCELoss()
+    criterion = nn.BCEWithLogitsLoss()  # this is more numerically stable than applying sigmoid and using nn.BCELoss()
     lr = 0.0003  # Enter optimal base_lr found by lr_find
     lr_max = 0.003  # enter optimal max_lr fonud by lr_find
     # optimizer = torch.optim.SGD(model.parameters(), weight_decay=1e-4, lr=lr, momentum=0.9)
@@ -112,35 +118,38 @@ if __name__ == '__main__':
 
     scheduler = CyclicLR(optimizer, lr, lr_max, cycle_momentum=False)
 
-    for epoch in range(20):
+    for epoch in range(25):
+        if train:
+            # Training loop
+            model.train()
+            total_training_loss = 0.0
+            for i, (data, target, class_ids) in enumerate(train_loader):
+                data, target = data, target
+                if use_gpu:
+                    data = data.cuda()
+                    target = target.cuda()
 
-        # Training loop
-        model.train()
-        total_training_loss = 0.0
-        for i, (data, target, class_ids) in enumerate(train_loader):
-            data, target = data, target
-            if use_gpu:
-                data = data.cuda()
-                target = target.cuda()
+                optimizer.zero_grad()
+                output = model.predict(data, use_gpu, class_ids)
 
-            optimizer.zero_grad()
-            output = model.predict(data, use_gpu, class_ids)
+                loss = criterion(output, target)
+                loss.backward()
 
-            loss = criterion(output, target)
-            loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_training_loss += loss.item()
 
-            optimizer.step()
-            scheduler.step()
-            total_training_loss += loss.item()
+            img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
+            output_mask = np.abs(create_boolean_mask(output[0][0].cpu().detach().numpy()) * (-1))  # TODO make sure this mask works correctly
+            target_mask = target[0][0].cpu().numpy().astype(np.bool)
 
-        img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
-        img[(output[0][0] > 0.1).cpu().numpy().astype(np.bool), 0] = 1
-        img[(target[0][0] > 0.1).cpu().numpy().astype(np.bool), 1] = 1
-        # overlapping regions look yellow
-        plt.imshow(img)
-        plt.show()
-        print('Training Epoch: {} - Loss: {:.6f}'.format(epoch + 1, total_training_loss / len(df_train)))
-        torch.save(model.state_dict(), 'model.pth')
+            img[output_mask == 1, 0] = 1
+            img[target_mask == 1, 1] = 1
+            # overlapping regions look yellow
+            plt.imshow(img)
+            plt.savefig(f'training_process/training_{epoch}.png')
+            print('Training Epoch: {} - Loss: {:.6f}'.format(epoch + 1, total_training_loss / len(df_train)))
+            torch.save(model.state_dict(), 'model.pth')
 
         # Validation Loop
         model.eval()
@@ -158,54 +167,13 @@ if __name__ == '__main__':
             total_validation_loss += loss.item()
 
         img = (data[0].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
-        img[(output[0][0] > 0.1).cpu().numpy().astype(np.bool), 0] = 1
-        img[(target[0][0] > 0.1).cpu().numpy().astype(np.bool), 1] = 1
+        output_mask = np.abs(create_boolean_mask(output[0][0].cpu().detach().numpy()) * (-1))
+        target_mask = target[0][0].cpu().numpy().astype(np.bool)
+
+        img[output_mask == 1, 0] = 1
+        img[target_mask == 1, 1] = 1
+
         # overlapping regions look yellow
         plt.imshow(img)
-        plt.show()
+        plt.savefig(f'training_process/validation_{epoch}.png')
         print('Validation Epoch: {} - Loss: {:.6f}'.format(epoch + 1, total_validation_loss / len(df_valid)))
-
-    # # Submission example
-    # submit = pd.read_csv(path + 'sample_submission.csv', converters={'EncodedPixels': lambda e: ' '})
-    # print(len(submit))
-    # # only for one class, fix this
-    # sub4 = submit[submit['ImageId_ClassId'].apply(lambda x: x.split('_')[1] == '4')]
-    # print(len(sub4))
-    #
-    # test_data = ImageData(df=sub4, transform=data_transf, subset="test")
-    # test_loader = DataLoader(dataset=test_data, shuffle=False)
-    #
-    # # Predict for test data
-    # predict = []
-    # model.eval()
-    # for data in test_loader:
-    #     data = data
-    #     output = model(data)
-    #     output = output.cpu().detach().numpy() * (-1)
-    #     predict.append(abs(output[0]))
-    #
-    # pred_rle = []
-    #
-    # for p in predict:
-    #     img = np.copy(p)
-    #     mn = np.mean(img) * 1.2
-    #     img[img <= mn] = 0
-    #     img[img > mn] = 1
-    #     img = cv2.resize(img[0], (1600, 256))
-    #
-    #     pred_rle.append(mask2rle(img))
-    #
-    # # Only for one class fix this
-    # submit['EncodedPixels'][submit['ImageId_ClassId'].apply(lambda x: x.split('_')[1] == '4')] = pred_rle
-    #
-    # img_s = cv2.imread(path + 'test_images/' + submit['ImageId_ClassId'][47].split('_')[0])
-    # plt.imshow(img_s)
-    # plt.show()
-    #
-    # mask_s = rle2mask(submit['EncodedPixels'][47], (256, 1600))
-    # plt.imshow(mask_s)
-    # plt.show()
-    #
-    # print(submit.head(10))
-    #
-    # submit.to_csv('submission.csv', index=False)

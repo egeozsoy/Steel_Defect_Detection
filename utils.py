@@ -2,6 +2,15 @@ import numpy as np
 import torch
 
 
+def create_boolean_mask(output: np.array):
+    # Decide how to map the output to 1's and 0's
+    mean = np.mean(output) * 1.3
+    idx = output <= mean
+    output[idx] = 0
+    output[~idx] = 1
+    return output.astype(np.bool)
+
+
 def create_balanced_class_sampler(df):
     # Deal with imbalanced data https://discuss.pytorch.org/t/how-to-prevent-overfitting/1902/5, https://discuss.pytorch.org/t/some-problems-with-weightedrandomsampler/23242
     class_sample_count = [len(df[df['ImageId_ClassId'].str.contains(".jpg_{}".format(i + 1))]) for i in

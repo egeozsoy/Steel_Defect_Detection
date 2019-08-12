@@ -42,8 +42,6 @@ class UNet(nn.Module):
 
         self.conv_last = nn.Conv2d(64, n_class, 1)
 
-        self.sigmoid = nn.Sigmoid()
-
     def forward(self, input):
         x_original = self.conv_original_size0(input)
         x_original = self.conv_original_size1(x_original)
@@ -80,8 +78,6 @@ class UNet(nn.Module):
         x = self.conv_original_size2(x)
 
         out = self.conv_last(x)
-
-        out = self.sigmoid(out)
 
         return out
 
