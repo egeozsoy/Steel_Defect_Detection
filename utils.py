@@ -4,7 +4,7 @@ import torch
 
 def create_boolean_mask(output: np.array):
     # Decide how to map the output to 1's and 0's
-    mean = np.mean(output) * 1.3
+    mean = np.mean(output) * 0.4
     idx = output <= mean
     output[idx] = 0
     output[~idx] = 1

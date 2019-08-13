@@ -2,3 +2,5 @@
 *.csv
 .idea/*
 __pycache__/*
+model.pth
+training_process/*
